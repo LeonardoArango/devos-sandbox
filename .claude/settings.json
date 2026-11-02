@@ -1,0 +1,188 @@
+{
+  "env": {
+    "DO_NOT_TRACK": "1",
+    "IMPECCABLE_NO_TELEMETRY": "1",
+    "TASTE_SKILL_HISTORY": ".taste-skill/history.json"
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git checkout -b *)",
+      "Bash(git switch *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(npm test *)",
+      "Bash(npm run lint *)",
+      "Bash(npm run build *)",
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(gitleaks *)",
+      "Bash(npx --no-install playwright test*)",
+      "Bash(npx playwright test*)",
+      "Bash(npx playwright show-report*)",
+      "Bash(npx playwright show-trace*)",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_hover",
+      "mcp__playwright__browser_select_option",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_take_screenshot",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_network_requests",
+      "mcp__playwright__browser_resize",
+      "mcp__playwright__browser_navigate_back",
+      "mcp__playwright__browser_tabs",
+      "mcp__playwright__browser_close",
+      "Bash(npx --no-install lighthouse*)",
+      "Bash(node .agents/skills/taste/scripts/lint.mjs*)",
+      "Bash(node .agents/skills/taste/scripts/draw.mjs*)",
+      "Edit",
+      "Write",
+      "Bash(git branch --show-current)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(ls *)",
+      "Bash(mkdir -p *)",
+      "Bash(gh issue view * --json *)",
+      "Bash(npm test)",
+      "Bash(npm run lint)",
+      "Bash(node --test*)",
+      "Bash(node --check *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(gh issue create *)",
+      "Bash(gh issue edit *)",
+      "Bash(gh issue comment *)",
+      "Bash(gh label *)",
+      "Bash(gh pr create *)",
+      "Bash(npm install *)",
+      "Bash(pip install *)",
+      "Bash(docker *)",
+      "WebFetch",
+      "mcp__github__*",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_evaluate",
+      "mcp__playwright__browser_file_upload",
+      "Bash(npx playwright install*)",
+      "Bash(npx playwright test * --update-snapshots*)",
+      "Bash(npx playwright test * -u*)",
+      "Bash(./guardrails/scripts/devos-issue.sh *)",
+      "Bash(guardrails/scripts/devos-issue.sh *)",
+      "WebSearch",
+      "Bash(gh api *)"
+    ],
+    "deny": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * main)",
+      "Bash(git reset --hard *)",
+      "Bash(rm -rf *)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(sudo *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(terraform apply *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh secret *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh release create *)",
+      "Read(./.env*)",
+      "Read(./**/*.pem)",
+      "Read(./**/secrets/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Edit(./guardrails/**)",
+      "Edit(./memory/base/**)",
+      "Edit(./.github/workflows/**)",
+      "Edit(./.claude/settings.json)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(git checkout .)",
+      "Bash(git checkout -- .)",
+      "Bash(git restore .)",
+      "Edit(./.mcp.json)",
+      "Bash(npx *@latest*)",
+      "Edit(./.agents/skills/vendor/**)",
+      "Bash(* .agents/skills/vendor/*/install*)",
+      "Edit(./.claude/skills/vendor/**)",
+      "Edit(./.claude/settings.local.json)",
+      "Edit(./.claude/output-styles/**)",
+      "Edit(./.devos.env)",
+      "Edit(./devos)",
+      "Bash(*devos run*)",
+      "Bash(*devos reanudar*)",
+      "Bash(*devos aprobar*)",
+      "Bash(*devos memoria*)",
+      "Bash(*DEVOS_MODO_MEMORIA*)",
+      "Bash(gh issue edit * --add-label aprobada*)",
+      "Bash(gh pr ready *)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
+  "sandbox": {
+    "enabled": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/guardrails/hooks/protect-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/guardrails/hooks/require-spec.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/guardrails/hooks/block-secrets.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/guardrails/hooks/post-edit-lint.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/guardrails/hooks/stop-checks.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

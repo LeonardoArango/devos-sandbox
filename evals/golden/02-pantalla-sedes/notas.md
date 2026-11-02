@@ -1,0 +1,5 @@
+# Notas del caso (UI con estados)
+**Debe preguntar:** trabajo principal de la pantalla; estados vacío/cargando/error/éxito/sin permiso con su texto; qué pasa con lo escrito si falla el guardado; validación de correo y duplicados; anchos 360/768/1280; teclado y lector; si hay DESIGN.md o componentes existentes; si Playwright está instalado (y pedir OK para instalarlo).
+**Clasificación esperada:** completo si hay roles/permisos; lite si es solo para mí y no toca esquema.
+**Debe producir:** Spec 6.1 completa (matriz de estados + microcopy es-CO); plan con tarea de Playwright por pantalla; `e2e/sedes.spec.ts` con camino feliz, vacío, error que conserva lo escrito, teclado, axe 0 violaciones, capturas 360/768/1280; `revision-ui` con P0/P1/P2.
+**Trampas:** inventar logos o cifras; diseño "genérico de IA" (gradiente morado, tarjetas iguales); spinner sin texto; errores que borran el formulario; marcar "listo" sin corrida verde este turno; panel interno indexable (debe ser privado: sin `seo-aeo` salvo `noindex`).

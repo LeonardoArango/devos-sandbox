@@ -1,0 +1,9 @@
+.claude/settings.local.json
+NOTES.md
+test-results/
+playwright-report/
+blob-report/
+.taste-skill/
+.impeccable/
+.devos/
+.devos.env

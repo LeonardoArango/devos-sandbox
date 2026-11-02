@@ -1,0 +1,5 @@
+interface:
+  display_name: "emil-prototype"
+
+policy:
+  allow_implicit_invocation: false

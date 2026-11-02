@@ -1,0 +1,14 @@
+## Recibo de cambio
+- **OBJETIVO:** <tarea / CA> — Spec `specs/<id>/spec.md` v<x>
+- **CAMINO:** lite | completo
+- **CAMBIADO:** <archivos/módulos, 1 línea c/u>
+- **VERIFICADO:** <CA → evidencia>
+- **UI (si aplica):** capturas antes/después por ancho (`specs/<id>/capturas/`) + checklist `revision-ui` (✓/✗)
+- **PLAYWRIGHT (UI):** `DEVOS_E2E_CMD` verde este turno: <n> tests · axe 0 violaciones · `playwright-report/` · trazas de fallos corregidos
+- **SEO/AEO (público):** `e2e/seo.spec.ts` verde · Lighthouse SEO <n>/umbral o N/A · robots/política bots IA · sitemap
+- **NO VERIFICADO:** <qué y por qué>
+- **DECISIONES:** <decisión y alternativa descartada>
+- **OMITIDO A PROPÓSITO:** <lo que no hice por simple (YAGNI) y su riesgo, o "nada">
+- **RIESGOS:** <regresión, datos, seguridad, rendimiento>
+- **REQUIERE APROBACIÓN:** <migración / deploy / dependencia nueva / ninguno>
+- **APRENDIZAJE:** <algo para memoria/AGENTS.md, o "nada">

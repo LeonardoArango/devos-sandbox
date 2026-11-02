@@ -1,0 +1,5 @@
+interface:
+  display_name: "emil-improve-animations"
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,5 @@
+interface:
+  display_name: "emil-write-swift"
+
+policy:
+  allow_implicit_invocation: false

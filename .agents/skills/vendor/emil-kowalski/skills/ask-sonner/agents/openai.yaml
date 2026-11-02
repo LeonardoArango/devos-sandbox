@@ -1,0 +1,5 @@
+interface:
+  display_name: "emil-ask-sonner"
+
+policy:
+  allow_implicit_invocation: false

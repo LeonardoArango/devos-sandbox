@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+# ./devos — orquestador del Personal Dev OS.
+# Tú intervienes en: nuevo (investigar + challenge + Spec) y aprobar. Desde ahí, los agentes planean, construyen,
+# verifican, documentan en el Issue, abren el PR y lo fusionan solos (según la sección 9 de la Spec).
+#
+#   ./devos init                     comprueba requisitos y crea etiquetas en GitHub (una vez por repo)
+#   ./devos nuevo "<idea>"           sesión interactiva: investigar → challenge → Spec + Issue en borrador
+#   ./devos aprobar <id>             apruebas (escribiendo el id) y arranca la ejecución autónoma
+#   ./devos run <id>                 ejecución autónoma (también reanuda: salta lo ya hecho)
+#   ./devos run --issue <n>          igual, desde GitHub Actions (etiqueta `aprobada` puesta por el dueño)
+#   ./devos estado                   tablero de Specs, PR y consumo
+#   ./devos memoria                  sesión interactiva para aplicar propuestas de memoria (cada 2–4 semanas)
+#
+# Config: variables DEVOS_* en el entorno o en .devos.env (ver .devos.env.ejemplo). Los agentes no pueden
+# ejecutar este script ni editarlo (deny + protect-paths).
+set -euo pipefail
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "devos: ejecútalo dentro de un repo git" >&2; exit 1; }
+cd "$ROOT"
+export CLAUDE_PROJECT_DIR="$ROOT"
+# shellcheck source=guardrails/hooks/_spec.sh
+source guardrails/hooks/_spec.sh
+[[ -f .devos.env ]] && { set -a; source .devos.env; set +a; }
+
+CLAUDE=${DEVOS_CLAUDE_BIN:-claude}
+M_PLAN=${DEVOS_MODELO_PLAN:-opus};  M_BUILD=${DEVOS_MODELO_BUILD:-sonnet}
+M_VERIF=${DEVOS_MODELO_VERIF:-opus}; M_RETRO=${DEVOS_MODELO_RETRO:-sonnet}
+MAX_INT=${DEVOS_MAX_INTENTOS:-3}     # intentos por tarea (construir → checks → verificador)
+TURNOS=${DEVOS_MAX_TURNOS:-80}       # tope de turnos por sesión headless
+BASE=${DEVOS_BASE:-main}
+AUTOMERGE=${DEVOS_AUTOMERGE:-1}      # 1 = auto-merge cuando todo está en verde y nada exige revisión
+MERGE_SIN_CI=${DEVOS_MERGE_SIN_CI:-0} # 1 = si el repo no tiene checks obligatorios, fusiona igual (no recomendado)
+DUENO=${DEVOS_DUENO:-}
+
+c_b=$'\033[1m'; c_0=$'\033[0m'
+log(){ printf '%s[devos]%s %s\n' "$c_b" "$c_0" "$*"; }
+die(){ printf '%s[devos]%s %s\n' "$c_b" "$c_0" "$*" >&2; exit 1; }
+need(){ command -v "$1" >/dev/null || die "falta '$1'. $2"; }
+spec_path(){ echo "specs/$1/spec.md"; }
+issue_url(){ fm_get "$(spec_path "$1")" issue; }
+mencion(){ [[ -n "$DUENO" ]] && echo "@$DUENO " || true; }
+
+fm_set(){ # fm_set <archivo> <campo> <valor> — solo dentro del frontmatter
+  local f=$1 k=$2 v=$3 tmp; tmp=$(mktemp)
+  awk -v k="$k" -v v="$v" 'NR==1&&/^---$/{fm=1;print;next} fm&&/^---$/{if(!done)print k": "v;fm=0;print;next}
+       fm&&$0 ~ "^"k":"{print k": "v;done=1;next} {print}' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+nota(){ # nota <id> <texto> — comentario en el Issue de la Spec (bitácora)
+  local f; f=$(mktemp); printf '%s\n' "$2" > "$f"
+  guardrails/scripts/devos-issue.sh nota "$1" "$f" >/dev/null 2>&1 || log "aviso: no pude comentar en el Issue"
+  rm -f "$f"
+}
+
+escalar(){ # escalar <id> <motivo> — se detiene y te avisa en el Issue
+  local id=$1 motivo=$2 url; url=$(issue_url "$id")
+  log "BLOQUEADO: $motivo"
+  git add "specs/$id" 2>/dev/null && git commit -qm "bloqueo($id): $motivo" 2>/dev/null && git push -q -u origin "feat/$id" 2>/dev/null || true
+  if [[ -n "$url" ]]; then
+    gh issue edit "$url" --add-label bloqueado >/dev/null 2>&1 || true
+    nota "$id" "$(mencion)🛑 **Ejecución autónoma detenida** en \`$id\`.
+**Motivo:** $motivo
+$( [[ -f specs/$id/BLOQUEO.md ]] && { echo; echo '**BLOQUEO.md:**'; echo; cat "specs/$id/BLOQUEO.md"; } )
+Resuélvelo (edita la Spec y vuelve a aprobar, o responde en BLOQUEO.md) y corre \`./devos run $id\`: reanuda donde quedó."
+  fi
+  exit 3
+}
+
+claude_run(){ # claude_run <id> <fase> <modelo> <prompt> [herramientas extra...]
+  local id=$1 fase=$2 modelo=$3 prompt=$4; shift 4
+  local logd=".devos/logs/$id"; mkdir -p "$logd"
+  local extra=(); for t in "$@"; do extra+=(--allowedTools "$t"); done
+  log "→ $fase ($modelo)"
+  local rc=0
+  local saltar=1; [[ "$fase" == build-* ]] && saltar=0
+  DEVOS_AUTONOMO=1 DEVOS_SPEC="$id" DEVOS_SALTAR_STOP=$saltar "$CLAUDE" -p "$prompt" --model "$modelo" --permission-mode dontAsk \
+    --max-turns "$TURNOS" --output-format json ${extra[@]+"${extra[@]}"} > "$logd/$fase.json" 2> "$logd/$fase.err" || rc=$?
+  local costo turnos; costo=$(jq -r '.total_cost_usd // empty' "$logd/$fase.json" 2>/dev/null || true)
+  turnos=$(jq -r '.num_turns // empty' "$logd/$fase.json" 2>/dev/null || true)
+  [[ -f "specs/$id/uso.csv" ]] || echo "fecha,fase,modelo,turnos,costo_usd,rc" > "specs/$id/uso.csv"
+  echo "$(date +%F_%H:%M),$fase,$modelo,${turnos:-?},${costo:-?},$rc" >> "specs/$id/uso.csv"
+  return $rc
+}
+
+categorias_tocadas(){ # imprime categorías sensibles que el diff contra BASE toca
+  local cambios; cambios=$(git diff --name-only "origin/$BASE"...HEAD 2>/dev/null || git diff --name-only "$BASE"...HEAD)
+  grep -Eq '(^|/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|pyproject\.toml|poetry\.lock|uv\.lock|requirements[^/]*\.txt|go\.(mod|sum)|Cargo\.(toml|lock)|Gemfile(\.lock)?|composer\.(json|lock))$' <<<"$cambios" && echo dependencias
+  grep -Eq '(^|/)(migrations|migrate|alembic|prisma/migrations)/' <<<"$cambios" && echo migraciones
+  grep -Eq '(^|/)auth/' <<<"$cambios" && echo auth
+  grep -Eq '(^|/)(infra|terraform|k8s|helm)/|(^|/)(Dockerfile|docker-compose[^/]*)$' <<<"$cambios" && echo infra
+  grep -Eq '^\.github/workflows/' <<<"$cambios" && echo ci
+  true
+}
+
+# ───────────────────────────── init ─────────────────────────────
+cmd_init(){
+  need git ""; need jq "Instálalo (brew/apt install jq)."; need gh "https://cli.github.com"; need "$CLAUDE" "npm i -g @anthropic-ai/claude-code"
+  gh auth status >/dev/null 2>&1 || die "gh no está autenticado: gh auth login"
+  for l in "spec:1D76DB" "needs-approval:D93F0B" "aprobada:0E8A16" "bloqueado:B60205" "revisar-humano:FBCA04" "memoria:5319E7"; do
+    gh label create "${l%%:*}" -c "${l#*:}" --force >/dev/null && log "etiqueta ${l%%:*} ok"
+  done
+  [[ -z "$DUENO" ]] && log "Define DEVOS_DUENO=$(gh api user -q .login 2>/dev/null || echo '<tu-usuario>') en .devos.env (menciones y aprobación por etiqueta)."
+  local repo; repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+  if gh api "repos/$repo/branches/$BASE/protection" >/dev/null 2>&1; then log "protección de rama en $BASE: ok"
+  else log "AVISO: $BASE sin protección de rama. Actívala (PR + checks obligatorios) para que el auto-merge sea seguro."; fi
+  gh api "repos/$repo" -q '.allow_auto_merge' 2>/dev/null | grep -q true \
+    && log "auto-merge del repo: ok" || log "AVISO: activa 'Allow auto-merge' en Settings › General del repo."
+  log "Listo. Siguiente: ./devos nuevo \"<idea>\""
+}
+
+# ───────────────────────────── nuevo ─────────────────────────────
+cmd_nuevo(){
+  local idea=${1:?uso: ./devos nuevo \"<idea en 1–3 líneas>\"}
+  git switch "$BASE" >/dev/null 2>&1 && git pull --ff-only >/dev/null 2>&1 || true
+  log "Sesión interactiva: responde el challenge y revisa la Spec. Al terminar: ./devos aprobar <id>"
+  "$CLAUDE" "Inicia el flujo del Personal Dev OS para esta idea: «$idea».
+1) Skill investigar (asigna el id NNN-slug siguiente a los de specs/ y research/).
+2) Skill challenge: entrevístame por rondas hasta vaciar la frontera; no pidas Gate A aparte si respondo todo.
+3) Skill escribir-spec-y-registrar: Spec en la rama feat/<id>, sección 9 (autonomía) decidida conmigo, y publícala en GitHub Issues en borrador.
+Termina con: 'Listo: ./devos aprobar <id>' y un resumen de 10 líneas."
+  local rama; rama=$(git branch --show-current)
+  if [[ "$rama" == feat/* ]]; then git push -u origin "$rama" >/dev/null 2>&1 && log "rama $rama publicada" || true; fi
+}
+
+# ───────────────────────────── aprobar ─────────────────────────────
+cmd_aprobar(){
+  local id=${1:?uso: ./devos aprobar <id>}; local correr=1; [[ "${2:-}" == --sin-correr ]] && correr=0
+  git switch "feat/$id" >/dev/null 2>&1 || true
+  local s; s=$(spec_path "$id"); [[ -f "$s" ]] || die "no existe $s (¿estás en la rama feat/$id?)"
+  spec_aprobada "$s" && { log "ya estaba aprobada"; ((correr)) && exec "$0" run "$id"; exit 0; }
+  [[ -n "$(issue_url "$id")" ]] || die "la Spec no tiene Issue. Pídele al agente: devos-issue.sh publicar $id"
+  local pend ca; pend=$(grep -c '\[PENDIENTE\]' "$s" || true); ca=$(grep -cE '^\| *CA[0-9]+' "$s" || true)
+  echo; echo "${c_b}$(fm_get "$s" titulo)${c_0}  ($id · camino $(fm_get "$s" camino) · v$(fm_get "$s" version))"
+  echo "  CA: $ca · [PENDIENTE]: $pend · preautoriza: $(fm_get "$s" preautoriza)"
+  echo "  Issue: $(issue_url "$id")"
+  ((pend > 0)) && echo "  ⚠ Hay [PENDIENTE]: los agentes elegirán lo conservador o se detendrán si bloquea un P0."
+  echo; echo "Al aprobar, los agentes construyen y fusionan SOLOS lo que la sección 9 permita."
+  { : </dev/tty; } 2>/dev/null || die "aprobar exige una terminal humana (sin TTY no se aprueba)."
+  local r; read -r -p "Escribe el id ($id) para aprobar: " r </dev/tty
+  [[ "$r" == "$id" ]] || die "no coincide: no se aprobó."
+  fm_set "$s" estado aprobada
+  fm_set "$s" aprobado "\"$(date +%F' '%H:%M) · $(git config user.name || whoami) · cli\""
+  git add "$s" && git commit -qm "spec($id): aprobada" && git push -u origin "feat/$id" >/dev/null 2>&1 || true
+  guardrails/scripts/devos-issue.sh publicar "$id" >/dev/null || log "aviso: no pude actualizar el Issue"
+  gh issue edit "$(issue_url "$id")" --add-label aprobada --remove-label needs-approval >/dev/null 2>&1 || true
+  log "Spec $id aprobada."
+  ((correr)) && exec "$0" run "$id"; true
+}
+
+# ───────────────────────────── run ─────────────────────────────
+resolver_issue(){ # imprime el id cuya Spec apunta al Issue n (busca en ramas remotas feat/*)
+  local n=$1 ref id
+  git fetch -q origin '+refs/heads/feat/*:refs/remotes/origin/feat/*' 2>/dev/null || true
+  for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat/); do
+    id=${ref#origin/feat/}
+    git show "$ref:specs/$id/spec.md" 2>/dev/null | grep -Eq "^issue:[[:space:]]*https://github\.com/.+/issues/$n([[:space:]]|$)" && { echo "$id"; return; }
+  done
+}
+
+cmd_run(){
+  local id=${1:-}
+  if [[ "$id" == --issue ]]; then
+    local n=${2:?uso: ./devos run --issue <n>}; id=$(resolver_issue "$n"); [[ -n "$id" ]] || die "ninguna rama feat/* apunta al Issue #$n"
+    git switch "feat/$id" >/dev/null 2>&1 || git switch -c "feat/$id" --track "origin/feat/$id" >/dev/null
+    local s; s=$(spec_path "$id")
+    if ! spec_aprobada "$s"; then
+      # Solo en GitHub Actions y solo si quien puso la etiqueta es el dueño (lo valida también el workflow).
+      [[ "${GITHUB_ACTIONS:-}" == true && -n "$DUENO" && "${DEVOS_CI_APROBADO_POR:-}" == "$DUENO" ]] || die "la Spec $id no está aprobada"
+      fm_set "$s" estado aprobada; fm_set "$s" aprobado "\"$(date +%F' '%H:%M) · $DUENO · etiqueta\""
+      git add "$s"; git commit -qm "spec($id): aprobada por etiqueta"; git push -q origin "feat/$id"
+      gh issue edit "$(issue_url "$id")" --remove-label needs-approval >/dev/null 2>&1 || true
+    fi
+  fi
+  [[ -n "$id" ]] || die "uso: ./devos run <id>"
+  local s; s=$(spec_path "$id")
+  [[ "$(git branch --show-current)" == "feat/$id" ]] || git switch "feat/$id" >/dev/null 2>&1 || die "no existe la rama feat/$id"
+  spec_aprobada "$s" || die "la Spec $id no está aprobada (./devos aprobar $id)"
+  [[ -n "$(issue_url "$id")" ]] || die "la Spec no tiene Issue"
+  [[ -z "$(git status --porcelain)" ]] || log "hay cambios sin commitear en feat/$id: los retomo como trabajo en curso de la tarea pendiente"
+  need jq ""; need gh ""; need "$CLAUDE" ""
+  git fetch -q origin "$BASE" 2>/dev/null || true
+  gh issue edit "$(issue_url "$id")" --remove-label bloqueado >/dev/null 2>&1 || true
+  if [[ -f "specs/$id/BLOQUEO.md" ]]; then   # reanudar tras un bloqueo: tu respuesta queda como decisión
+    mkdir -p "specs/$id/decisiones"; mv "specs/$id/BLOQUEO.md" "specs/$id/decisiones/bloqueo-$(date +%Y%m%d-%H%M).md"
+    git add "specs/$id" && git commit -qm "decision($id): bloqueo resuelto por el dueño" || true
+  fi
+  local dec=""; [[ -d "specs/$id/decisiones" ]] && dec="Respeta las respuestas del dueño en specs/$id/decisiones/ (mandan sobre tus supuestos)."
+  local dep=(); preautoriza "$s" dependencias && dep=("Bash(npm install *)" "Bash(npm i *)" "Bash(pnpm add *)" "Bash(yarn add *)" "Bash(pip install *)" "Bash(uv add *)" "Bash(poetry add *)")
+
+  # ── 1. Plan y tareas (reemplaza el Gate C: lo revisa el subagente esceptico) ──
+  if [[ ! -f "specs/$id/tasks.md" ]]; then
+    nota "$id" "🤖 Arranca la ejecución autónoma de \`$id\` (plan → tareas → verificación → PR)."
+    claude_run "$id" plan "$M_PLAN" "MODO AUTÓNOMO (DEVOS_AUTONOMO=1). Usa la skill plan para la Spec $s.
+$dec Escribe specs/$id/plan.md y specs/$id/tasks.md. En vez del Gate C: pasa el plan por el subagente esceptico y corrige sus P0.
+No publiques en GitHub ni hagas commit (lo hace el orquestador). Si falta una decisión que bloquea un P0, escribe specs/$id/BLOQUEO.md y termina." \
+      "WebFetch" "WebSearch" || escalar "$id" "falló la sesión de plan (ver .devos/logs/$id/plan.err)"
+    [[ -f "specs/$id/BLOQUEO.md" ]] && escalar "$id" "el plan necesita una decisión tuya"
+    grep -qE '^### T[0-9]+' "specs/$id/tasks.md" 2>/dev/null || escalar "$id" "tasks.md no tiene tareas '### T<n>'"
+    git add "specs/$id" && git commit -qm "plan($id): plan y tareas"
+    guardrails/scripts/devos-issue.sh nota "$id" "specs/$id/plan.md" >/dev/null 2>&1 || true
+  fi
+
+  # ── 2. Construcción por tarea: construir → checks deterministas → verificador independiente ──
+  local tareas t; tareas=$(grep -oE '^### T[0-9]+' "specs/$id/tasks.md" | cut -c5-)
+  for t in $tareas; do
+    if git log --format=%s "origin/$BASE"..HEAD 2>/dev/null | grep -qF "$t($id)"; then log "$t ya hecha: salto"; continue; fi
+    local titulo; titulo=$(grep -E "^### $t[^0-9]" "specs/$id/tasks.md" | head -1 | sed -E "s/^### $t:?[[:space:]]*//; s/[[:space:]]*·.*$//")
+    local ok=0 i fb="" vf="specs/$id/verificacion/$t.md"
+    for ((i=1; i<=MAX_INT; i++)); do
+      [[ -f "$vf" ]] && fb="Intento $i: lee $vf (feedback del verificador o de los checks) y corrige SOLO eso."
+      claude_run "$id" "build-$t-$i" "$M_BUILD" "MODO AUTÓNOMO (DEVOS_AUTONOMO=1). Implementa la tarea $t de specs/$id/tasks.md (Spec: $s; plan: specs/$id/plan.md).
+$dec Lee solo lo necesario. TDD como dice la tarea. No preguntes: ante una duda no bloqueante elige lo conservador y anótalo en specs/$id/implementation-notes.md (sección Desviaciones).
+Si necesitas algo que no está preautorizado o una decisión que cambia un P0: escribe specs/$id/BLOQUEO.md y termina.
+No hagas commit ni push. Termina solo cuando el hook Stop quede en verde. $fb" ${dep[@]+"${dep[@]}"} \
+        || log "la sesión $t/$i terminó con error (sigo con checks)"
+      [[ -f "specs/$id/BLOQUEO.md" ]] && escalar "$id" "$t necesita una decisión tuya"
+      # Checks deterministas (los mismos del hook Stop): el entorno decide, no el agente.
+      mkdir -p "specs/$id/verificacion"
+      local out rc=0; out=$(echo '{}' | DEVOS_MAX_REINTENTOS=99 guardrails/hooks/stop-checks.sh 2>&1) || rc=$?
+      rm -f "$(git rev-parse --git-dir)/devos-stop-reintentos"
+      if ((rc != 0)); then printf 'VEREDICTO: RECHAZADO (checks deterministas)\n\n```\n%s\n```\n' "$(tail -40 <<<"$out")" > "$vf"; continue; fi
+      git add -A
+      claude_run "$id" "verif-$t-$i" "$M_VERIF" "MODO AUTÓNOMO (DEVOS_AUTONOMO=1). Usa la skill verificar para la tarea $t de la Spec $id con el subagente verificador (diff: git diff --cached).
+NO edites código. Escribe $vf: primera línea exactamente 'VEREDICTO: APROBADO' o 'VEREDICTO: RECHAZADO'; luego la tabla CA → evidencia y, si rechazas, qué corregir." \
+        || log "la sesión de verificación terminó con error"
+      # Si la verificación tocó código, se revierte: el verificador no construye.
+      local tocado; tocado=$(git diff --name-only -- . ':(exclude)specs')
+      [[ -n "$tocado" ]] && { log "el verificador editó código: revierto"; git checkout -- $tocado; }
+      if head -1 "$vf" 2>/dev/null | grep -q 'VEREDICTO: APROBADO'; then
+        git add -A; git commit -qm "$t($id): ${titulo:-tarea}"; ok=1; log "$t ✓"; break
+      fi
+      log "$t rechazada (intento $i/$MAX_INT)"
+    done
+    ((ok)) || escalar "$id" "$t no pasó la verificación tras $MAX_INT intentos (ver $vf)"
+  done
+
+  # ── 3. Retro: aprendizaje semántico directo, procedimental como propuesta ──
+  if ! git log --format=%s "origin/$BASE"..HEAD 2>/dev/null | grep -qF "retro($id)"; then
+    claude_run "$id" retro "$M_RETRO" "MODO AUTÓNOMO (DEVOS_AUTONOMO=1). Usa la skill retro-aprendizaje para la Spec $id (subagente aprendiz): lee implementation-notes, verificacion/, uso.csv y el diff.
+Hechos y decisiones del proyecto → actualiza memory/proyecto/. Cambios a AGENTS.md, skills o hooks → una propuesta por archivo en memory/propuestas/. No hagas commit." \
+      || log "retro con error (no bloquea)"
+    git add -A memory specs 2>/dev/null; git commit -qm "retro($id): memoria del proyecto y propuestas" 2>/dev/null || true
+  fi
+
+  # ── 4. Recibo, PR y política de merge ──
+  [[ -f "specs/$id/recibo.md" ]] || claude_run "$id" recibo "$M_BUILD" "MODO AUTÓNOMO. Usa la skill recibo para la Spec $id completa (todas las tareas; evidencia en specs/$id/verificacion/). Escribe specs/$id/recibo.md. No hagas commit." || true
+  [[ -f "specs/$id/recibo.md" ]] || { echo "## Recibo de cambio (generado por devos)"; for f in specs/$id/verificacion/*.md; do echo "### $(basename "$f" .md)"; head -30 "$f"; done; } > "specs/$id/recibo.md"
+  git add "specs/$id"; git commit -qm "recibo($id)" 2>/dev/null || true
+  git push -q -u origin "feat/$id" || escalar "$id" "no pude hacer push de feat/$id"
+
+  local motivos=() c cats; cats=$(categorias_tocadas)
+  for c in $cats; do [[ "$c" == ci ]] && { motivos+=("cambia CI (.github/workflows)"); continue; }
+    preautoriza "$s" "$c" || motivos+=("toca '$c' sin preautorización"); done
+  local req; req=$(grep -i 'requiere aprobaci' "specs/$id/recibo.md" | head -1 | tr '[:upper:]' '[:lower:]' | sed -E 's/.*requiere aprobaci[^:]*:[* ]*//')
+  if [[ -n "$req" ]] && ! grep -qE '^(ninguno|ninguna|nada|n/a|no|<)([^a-z]|$)' <<<"$req"; then motivos+=("el recibo declara que requiere aprobación: $req"); fi
+  [[ "$AUTOMERGE" == 1 ]] || motivos+=("DEVOS_AUTOMERGE=0")
+
+  local url n cierres pr; url=$(issue_url "$id"); n=${url##*/}
+  cierres="Closes #$n"; for k in $(awk '/^## 11\./{p=1;next} /^## /{p=0} p' "$s" | grep -oE '#[0-9]+' | sort -u); do cierres+=$'\n'"Closes $k"; done
+  pr=$(gh pr view "feat/$id" --json url -q .url 2>/dev/null || true)
+  if [[ -z "$pr" ]]; then
+    local body; body=$(mktemp); { cat "specs/$id/recibo.md"; echo; echo "$cierres"; echo; echo "_PR abierto por ./devos (ejecución autónoma)._"; } > "$body"
+    pr=$(gh pr create --base "$BASE" --head "feat/$id" --title "[$id] $(fm_get "$s" titulo)" --body-file "$body"); rm -f "$body"
+  fi
+  log "PR: $pr"
+
+  local costo; costo=$(awk -F, 'NR>1 && $5 ~ /^[0-9.]+$/ {s+=$5} END{printf "%.2f", s}' "specs/$id/uso.csv" 2>/dev/null || echo "?")
+  if ((${#motivos[@]} == 0)); then
+    if gh pr merge "$pr" --auto --squash --delete-branch >/dev/null 2>&1; then
+      nota "$id" "✅ Todas las tareas verificadas. PR $pr con **auto-merge**: se fusiona cuando el CI quede en verde. Costo de agentes: US\$ $costo."
+      log "auto-merge activado"
+    elif [[ "$MERGE_SIN_CI" == 1 ]] && gh pr merge "$pr" --squash --delete-branch >/dev/null 2>&1; then
+      nota "$id" "✅ PR $pr fusionado (repo sin checks obligatorios; DEVOS_MERGE_SIN_CI=1). Costo: US\$ $costo."
+    else
+      gh pr edit "$pr" --add-label revisar-humano >/dev/null 2>&1 || true
+      nota "$id" "$(mencion)🟡 PR $pr listo y verificado, pero no pude activar auto-merge (activa 'Allow auto-merge' y checks obligatorios en $BASE). Fusiónalo tú. Costo: US\$ $costo."
+    fi
+  else
+    gh pr edit "$pr" --add-label revisar-humano >/dev/null 2>&1 || true
+    local lista; lista=$(printf -- '- %s\n' "${motivos[@]}")
+    nota "$id" "$(mencion)🟡 PR $pr verificado, **espera tu revisión**:
+$lista
+Costo de agentes: US\$ $costo."
+  fi
+  ls memory/propuestas/*.md >/dev/null 2>&1 && log "hay propuestas de memoria: corre ./devos memoria cuando quieras (no bloquea)"
+  log "listo: $id"
+}
+
+# ───────────────────────────── estado ─────────────────────────────
+cmd_estado(){ # tablero de todas las ramas feat/* (locales y remotas)
+  git fetch -q origin '+refs/heads/feat/*:refs/remotes/origin/feat/*' 2>/dev/null || true
+  printf '%-26s %-10s %-7s %-8s %s\n' SPEC ESTADO TAREAS 'US$' PR
+  local refs ref id tmp est tot hechas costo pr; tmp=$(mktemp)
+  refs=$( { git for-each-ref --format='%(refname:short)' refs/heads/feat/; git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat/ | sed 's#^origin/##'; } | sort -u)
+  for ref in $refs; do
+    id=${ref#feat/}; git rev-parse -q --verify "$ref" >/dev/null || ref="origin/$ref"
+    git show "$ref:specs/$id/spec.md" > "$tmp" 2>/dev/null || continue
+    est=$(fm_get "$tmp" estado)
+    git cat-file -e "$ref:specs/$id/BLOQUEO.md" 2>/dev/null && est=BLOQUEADA
+    tot=$(git show "$ref:specs/$id/tasks.md" 2>/dev/null | grep -cE '^### T[0-9]+' || true)
+    hechas=$(git log --format=%s "origin/$BASE..$ref" 2>/dev/null | grep -cE "^T[0-9]+\($id\)" || true)
+    costo=$(git show "$ref:specs/$id/uso.csv" 2>/dev/null | awk -F, 'NR>1 && $5 ~ /^[0-9.]+$/ {s+=$5} END{printf "%.2f", s}' || true)
+    pr=$(gh pr list --head "feat/$id" --state all --json state,url -q '.[0] | "\(.state) \(.url)"' 2>/dev/null || true)
+    printf '%-26s %-10s %-7s %-8s %s\n' "$id" "$est" "${hechas:-0}/${tot:-0}" "${costo:--}" "${pr:--}"
+  done; rm -f "$tmp"
+  local p; p=$(ls memory/propuestas/*.md 2>/dev/null | wc -l | tr -d ' ')
+  ((p > 0)) && printf '\nPropuestas de memoria pendientes: %s (./devos memoria)\n' "$p"
+  true
+}
+
+# ───────────────────────────── memoria ─────────────────────────────
+cmd_memoria(){
+  ls memory/propuestas/*.md >/dev/null 2>&1 || { log "no hay propuestas pendientes"; exit 0; }
+  local rama="memoria/$(date +%F)"; git switch "$BASE" -q && git pull -q --ff-only || true; git switch -c "$rama" -q 2>/dev/null || git switch "$rama" -q
+  log "Sesión de memoria: apruebas o rechazas cada propuesta. Solo en esta sesión el agente puede editar AGENTS.md, skills y agentes."
+  DEVOS_MODO_MEMORIA=1 "$CLAUDE" "Revisa memory/propuestas/ con la skill retro-aprendizaje. Para cada propuesta: muéstrame patrón, evidencia y diff exacto, y pregúntame sí/no (AskUserQuestion).
+Aplica solo las que apruebe; mueve cada propuesta decidida a memory/propuestas/decididas/ con la decisión, y anota en memory/CHANGELOG.md.
+Antes de terminar: corre la regresión de evals que aplique (evals/README.md) y dime si alguna métrica empeoró."
+  git add -A memory AGENTS.md CLAUDE.md .agents/skills .claude/agents 2>/dev/null || true
+  git commit -qm "memoria: propuestas decididas $(date +%F)" 2>/dev/null && git push -q -u origin "$rama" \
+    && gh pr create --base "$BASE" --head "$rama" --title "Memoria $(date +%F)" --label memoria --body "Propuestas aprobadas en sesión con el dueño. Ver memory/CHANGELOG.md." || log "sin cambios de memoria"
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "$@";;
+  nuevo) shift; cmd_nuevo "$@";;
+  aprobar) shift; cmd_aprobar "$@";;
+  run|reanudar) shift; cmd_run "$@";;
+  estado) shift; cmd_estado "$@";;
+  memoria) shift; cmd_memoria "$@";;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//';;
+esac

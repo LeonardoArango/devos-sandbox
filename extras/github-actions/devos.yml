@@ -1,0 +1,52 @@
+# Ejecución autónoma en la nube: apruebas desde GitHub (incluso el celular) poniendo la etiqueta `aprobada`
+# al Issue de la Spec, y este workflow corre ./devos run sin tu laptop.
+# Instalación (la haces tú; .github/workflows está protegido para los agentes):
+#   1. cp extras/github-actions/devos.yml .github/workflows/devos.yml
+#   2. Secrets del repo: CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) o ANTHROPIC_API_KEY,
+#      y DEVOS_GH_TOKEN: token fine-grained con Contents, Issues y Pull requests (lectura/escritura) en ESTE repo.
+#      (Un PR abierto con el GITHUB_TOKEN por defecto no dispara tu CI; por eso el token propio.)
+#   3. Variables del repo: DEVOS_DUENO = tu usuario de GitHub. Opcional: DEVOS_MODELO_BUILD, DEVOS_MAX_INTENTOS…
+#   4. Revisa la versión de cada action antes de usarla (aquí van fijadas por versión mayor).
+name: devos
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue: { description: "Número del Issue de la Spec", required: true }
+concurrency:
+  group: devos-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+jobs:
+  run:
+    # Solo el dueño aprueba: la etiqueta debe ser `aprobada` y ponerla DEVOS_DUENO.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.actor == vars.DEVOS_DUENO) ||
+      (github.event.label.name == 'aprobada' && github.event.sender.login == vars.DEVOS_DUENO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.DEVOS_GH_TOKEN }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Herramientas
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq bubblewrap socat   # bubblewrap/socat: sandbox de Claude Code en Linux
+          npm i -g @anthropic-ai/claude-code
+          git config user.name "devos-bot" && git config user.email "devos-bot@users.noreply.github.com"
+          if [ -f package-lock.json ]; then npm ci; fi
+      - name: Ejecución autónoma
+        env:
+          GH_TOKEN: ${{ secrets.DEVOS_GH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEVOS_DUENO: ${{ vars.DEVOS_DUENO }}
+          DEVOS_CI_APROBADO_POR: ${{ github.event.sender.login || github.actor }}
+          DEVOS_MODELO_BUILD: ${{ vars.DEVOS_MODELO_BUILD }}
+          DEVOS_MAX_INTENTOS: ${{ vars.DEVOS_MAX_INTENTOS }}
+        run: ./devos run --issue "${{ github.event.issue.number || inputs.issue }}"

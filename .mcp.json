@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "--no-install", "playwright-mcp",
+        "--headless", "--isolated",
+        "--allowed-origins", "http://localhost:*;http://127.0.0.1:*",
+        "--block-service-workers", "--no-webmcp",
+        "--image-responses", "omit",
+        "--viewport-size", "1280x800",
+        "--output-dir", "test-results/mcp"
+      ]
+    }
+  }
+}

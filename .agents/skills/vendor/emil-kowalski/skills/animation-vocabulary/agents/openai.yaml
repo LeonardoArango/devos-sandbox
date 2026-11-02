@@ -1,0 +1,5 @@
+interface:
+  display_name: "emil-animation-vocabulary"
+
+policy:
+  allow_implicit_invocation: false
