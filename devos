@@ -112,7 +112,7 @@ cmd_nuevo(){
   local idea=${1:?uso: ./devos nuevo \"<idea en 1–3 líneas>\"}
   git switch "$BASE" >/dev/null 2>&1 && git pull --ff-only >/dev/null 2>&1 || true
   log "Sesión interactiva: responde el challenge y revisa la Spec. Al terminar: ./devos aprobar <id>"
-  "$CLAUDE" "Inicia el flujo del Personal Dev OS para esta idea: «$idea».
+  "$CLAUDE" "Inicia el flujo del Personal Dev OS para esta idea: «${idea}».
 1) Skill investigar (asigna el id NNN-slug siguiente a los de specs/ y research/).
 2) Skill challenge: entrevístame por rondas hasta vaciar la frontera; no pidas Gate A aparte si respondo todo.
 3) Skill escribir-spec-y-registrar: Spec en la rama feat/<id>, sección 9 (autonomía) decidida conmigo, y publícala en GitHub Issues en borrador.
