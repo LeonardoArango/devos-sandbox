@@ -1,2 +1,4 @@
 fecha,fase,modelo,turnos,costo_usd,rc
 2026-11-01_23:02,plan,opus,12,1.024187,0
+2026-11-01_23:02,build-T1-1,sonnet,8,0.1502349,0
+2026-11-01_23:03,verif-T1-1,opus,6,0.5946614,0
