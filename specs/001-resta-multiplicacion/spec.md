@@ -2,12 +2,12 @@
 id: 001-resta-multiplicacion
 titulo: "Funciones resta y multiplicación con validación de tipo"
 camino: lite
-estado: borrador
+estado: aprobada
 version: 0.1
 issue: https://github.com/LeonardoArango/devos-sandbox/issues/1
 research: research/001-resta-multiplicacion.md
 preautoriza: []
-aprobado: ""
+aprobado: "2026-11-01 22:58 · Leonardo Arango · cli"
 ---
 # Funciones resta y multiplicación con validación de tipo
 Marcadores: `[SUPUESTO]` `[PENDIENTE]` `[Propuesta IA]`. Nunca inventar datos. Un `[PENDIENTE]` que bloquee un P0 impide aprobar.
