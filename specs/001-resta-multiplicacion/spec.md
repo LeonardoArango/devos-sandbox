@@ -4,7 +4,7 @@ titulo: "Funciones resta y multiplicación con validación de tipo"
 camino: lite
 estado: borrador
 version: 0.1
-issue: <URL del GitHub Issue>
+issue: https://github.com/LeonardoArango/devos-sandbox/issues/1
 research: research/001-resta-multiplicacion.md
 preautoriza: []
 aprobado: ""
