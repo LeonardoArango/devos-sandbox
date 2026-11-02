@@ -1,0 +1,42 @@
+## Recibo de cambio
+- **OBJETIVO:** T1–T3 (CA1–CA9) — Spec `specs/001-resta-multiplicacion/spec.md` v0.1
+- **CAMINO:** lite
+- **CAMBIADO:**
+  - `src/resta.js` (nuevo): `resta(a, b)` con validación `typeof` (a, luego b).
+  - `src/multiplicacion.js` (nuevo): `multiplicacion(a, b)`, misma validación.
+  - `test/resta.test.js`, `test/multiplicacion.test.js` (nuevos): CA1–CA7, RF5–RF7.
+  - `package.json`: solo `scripts.lint`, que ahora revisa los tres módulos.
+  - `specs/001-resta-multiplicacion/`: plan, tareas, verificación, notas, uso.csv.
+  - `memory/`: propuestas y memoria del proyecto de la retro.
+- **VERIFICADO:** (`npm test` → 40 pass / 0 fail y `npm run lint` → exit 0, ejecutados este turno)
+  - CA1, CA3–CA7 (resta) → `verificacion/T1.md` (APROBADO). Incluye mutantes rotos en memoria.
+  - CA2, CA3, CA4, CA7, RF5, RF6 (multiplicacion) → `verificacion/T2.md` (APROBADO).
+  - CA8 (lint falla con error de sintaxis en `resta.js` y en `multiplicacion.js`, y vuelve a 0 al revertir) → `verificacion/T3.md` y `T3-ca8.md`. El verificador repitió las mutaciones en una copia aparte.
+  - CA9 (`suma`, su test, el script `test` y `type: module` sin cambios) → `verificacion/T3.md`. `✔ suma dos números` está en verde.
+- **UI (si aplica):** N/A
+- **PLAYWRIGHT (UI):** N/A (sin UI)
+- **SEO/AEO (público):** N/A
+- **NO VERIFICADO:**
+  - CA9 se comparó contra el `origin/main` local, sin `git fetch` (el sandbox no lo permite). Un `main` remoto más nuevo no se contrastó.
+  - Duplicados en GitHub Issues: sin red desde el sandbox (`[PENDIENTE]` según Spec §10).
+  - Los códigos de salida de `T3-ca8.md` salen del resultado de la herramienta, no de `echo "exit=$?"`. La corrida independiente del verificador los confirma.
+  - `resta(1)` con un solo argumento no tiene test. El sondeo manual lanza TypeError en `'b'`.
+- **DECISIONES:**
+  - Validación con `typeof === 'number'`. Descartado: coerción con `Number()` o `instanceof`, que aceptaría `new Number(3)` (los mutantes fallan los tests).
+  - Lint enumerando los módulos con `&&`. Descartado: `node --check a b`, que solo revisa el primer archivo.
+  - Un módulo y un test por función. Descartado: un helper compartido (fuera de alcance).
+- **OMITIDO A PROPÓSITO:**
+  - No se validó `suma`.
+  - No se rechazan NaN ni ±Infinity.
+  - No se valida la cantidad de argumentos.
+  - No hay soporte BigInt.
+  - No hay helper compartido.
+  - Riesgo: la API queda inconsistente (`suma` acepta cualquier cosa) y el lint exige añadir cada módulo nuevo a mano.
+- **RIESGOS:**
+  - Bajo. Solo código nuevo aislado y una línea de `package.json`.
+  - NaN e Infinity se propagan sin error, por decisión del dueño.
+  - `verificacion/T3-ca8.md` contiene rutas absolutas con el usuario local (`/Users/…`). Conviene pasarlas a relativas antes de publicar. No son datos sensibles.
+  - Desviaciones registradas en `implementation-notes.md`.
+  - Costo registrado en `uso.csv`: ≈ 3.62 USD en 8 fases, todas con rc 0.
+- **REQUIERE APROBACIÓN:** ninguno (`preautoriza: []`; sin migraciones, auth, infra, dependencias nuevas ni deploy).
+- **APRENDIZAJE:** el sandbox deniega comandos compuestos (`cmd; echo "exit=$?"`) y `git fetch`. Las tareas que lo piden deberían usar comandos simples y `origin/main` local. Ya hay propuesta en `memory/propuestas/`.
