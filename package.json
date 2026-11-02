@@ -1,2 +1,2 @@
 { "name": "devos-sandbox", "version": "0.1.0", "private": true, "type": "module",
-  "scripts": { "test": "node --test", "lint": "node --check src/suma.js" } }
+  "scripts": { "test": "node --test", "lint": "node --check src/suma.js && node --check src/resta.js && node --check src/multiplicacion.js" } }
